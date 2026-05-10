@@ -8,6 +8,9 @@ dependencies = [
     "django===5.2.13",
     "logging>=0.4.9.6",
     "rich-click>=1.9.7",
+    "paho-mqtt>=1.6.1",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
 ]
 [project.scripts]
 pat-sig = "pat_sig.__main__:run"
