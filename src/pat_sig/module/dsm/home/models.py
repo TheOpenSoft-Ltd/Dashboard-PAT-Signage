@@ -1,4 +1,3 @@
-import uuid
 from enum import EnumType
 
 from django.db import models
@@ -20,7 +19,8 @@ class TaskType(models.TextChoices):
 class TaskStatus(models.TextChoices):
     PENDING = "pending", "Pending"
     DOWNLOADED = "downloaded", "Downloaded"
-    RUNNING = "running", "Running"
+    PLAYING = "playing", "playing"
+    SKIPING = "skiping", "skiping"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
 
@@ -37,13 +37,16 @@ class DSMTask(models.Model):
     media_type = models.CharField(
         max_length=10, choices=MediaType.choices, default=MediaType.IMAGE
     )
-    started_at = models.DateTimeField(blank=True, null=True)
-    ended_at = models.DateTimeField(blank=True, null=True)
+    timezone = models.CharField(max_length=50, blank=True, null=True)
+    date_started_at = models.DateField(blank=True, null=True)
+    time_started_at = models.TimeField(blank=True, null=True)
+    date_end_at = models.DateField(blank=True, null=True)
+    time_end_at = models.TimeField(blank=True, null=True)
     status = models.CharField(
         max_length=20, choices=TaskStatus.choices, default=TaskStatus.PENDING
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = "dsm_task"

@@ -123,5 +123,6 @@ MQTT_TOPIC = "pat-sig/+/data"
 MQTT_TLS_ENABLED = False
 
 DSM_ID = os.getenv("DSM_ID", "")
+DEVICE_ID = os.getenv("DEVICE_ID", "")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

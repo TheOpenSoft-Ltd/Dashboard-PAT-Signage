@@ -30,7 +30,7 @@
       .media-container video {
         width: 100%;
         height: 100%;
-        object-fit: fit;
+        object-fit: contain;
       }
     </style>
   </head>
@@ -42,27 +42,28 @@
       </video>
       {% else %}
       <video autoplay loop {% if video_muted %}muted{% endif %} playsinline>
-        <source src="{% static media_url %}" type="video/{{ video_format }}" />
+        <source src="{{ media_url }}" type="video/{{ video_format }}" />
       </video>
-      {% endif %} {% elif media_type == 'image' or media_type == 'gif' %} {% if "://" in media_url %}
+      {% endif %}       {% elif media_type == 'image' or media_type == 'gif' %} {% if "://" in media_url %}
       <img src="{{ media_url }}" alt="Digital Signage" />
       {% else %}
-      <img src="{% static 'default.png' %}" alt="Digital Signage" />
+      <img src="{{ media_url }}" alt="Digital Signage" />
       {% endif %} {% else %}
       <img src="{% static 'default.png' %}" alt="Digital Signage" />
       {% endif %}
+    </div>
     <script>
       const mediaUrl = "{{ media_url }}";
       let lastUrl = mediaUrl;
 
       setInterval(async () => {
         try {
-          const res = await fetch("{% url 'home:home' %}");
-          const html = await res.text();
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(html, "text/html");
-          const newUrl = doc.querySelector(".media-container").innerHTML;
-          if (newUrl !== document.querySelector(".media-container").innerHTML) {
+          const res = await fetch("{% url 'home:home' %}", {
+            headers: { Accept: "application/json" },
+          });
+          const data = await res.json();
+          if (data.media_url !== lastUrl) {
+            lastUrl = data.media_url;
             location.reload();
           }
         } catch (e) {

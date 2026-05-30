@@ -35,9 +35,9 @@ class MqttService:
         if rc == 0:
             self._connected = True
             logger.info("MQTT connected successfully")
-            dsm_id = getattr(settings, "DSM_ID", "")
-            if dsm_id:
-                topic = f"pat-sig/{dsm_id}/data"
+            device_id = getattr(settings, "DEVICE_ID", "")
+            if device_id:
+                topic = f"pat-sig/{device_id}/data"
             else:
                 topic = getattr(settings, "MQTT_TOPIC", "pat-sig/+/data")
             client.subscribe(topic)
