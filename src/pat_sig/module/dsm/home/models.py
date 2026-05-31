@@ -45,8 +45,8 @@ class DSMTask(models.Model):
     status = models.CharField(
         max_length=20, choices=TaskStatus.choices, default=TaskStatus.PENDING
     )
-    created_at = models.DateTimeField(blank=True, null=True)
-    updated_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
         db_table = "dsm_task"

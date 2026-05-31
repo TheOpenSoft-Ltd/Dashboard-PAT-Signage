@@ -38,10 +38,13 @@ class MqttService:
             device_id = getattr(settings, "DEVICE_ID", "")
             if device_id:
                 topic = f"pat-sig/{device_id}/data"
+                status_topic = f"pat-sig/{device_id}/status"
             else:
                 topic = getattr(settings, "MQTT_TOPIC", "pat-sig/+/data")
+                status_topic = "pat-sig/+/status"
             client.subscribe(topic)
-            logger.info(f"MQTT subscribed to: {topic}")
+            client.subscribe(status_topic)
+            logger.info(f"MQTT subscribed to: {topic}, {status_topic}")
         else:
             logger.error(f"MQTT connection failed with code: {rc}")
             self._schedule_reconnect()
