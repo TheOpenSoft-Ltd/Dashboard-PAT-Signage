@@ -63,13 +63,26 @@ uv run pat-sig status   # check it
 |---|---|
 | `pat-sig init` | Write device config `.env` (DEVICE_ID, DSM_ID, MQTT settings) |
 | `pat-sig run` | Run the display server (gunicorn, production). `--dev` uses Django's runserver; `--host`, `--port`, `--no-migrate` |
-| `pat-sig install` | Install the `pat-sig` systemd service (`--host`, `--port`) |
-| `pat-sig start` | Start the service |
-| `pat-sig stop` | Stop the service |
-| `pat-sig restart` | Restart the service |
-| `pat-sig status` | Show service status |
-| `pat-sig logs [-f]` | Show service logs (journalctl), `-f` to follow |
-| `pat-sig uninstall` | Stop, disable and remove the service |
+| `pat-sig install` | Install the `pat-sig` backend **and** `pat-sig-kiosk` (Chrome) systemd services (`--host`, `--port`, `--no-kiosk`) |
+| `pat-sig start` | Start both services (backend + kiosk) |
+| `pat-sig stop` | Stop both services |
+| `pat-sig restart` | Restart both services |
+| `pat-sig status [--kiosk]` | Show service status (add `--kiosk` for the kiosk) |
+| `pat-sig logs [-f] [--kiosk]` | Show service logs (journalctl) |
+| `pat-sig uninstall` | Stop, disable and remove both services |
+
+### Kiosk (Chrome fullscreen)
+
+`pat-sig install` also installs **`pat-sig-kiosk.service`** which launches Google
+Chrome / Chromium in `--kiosk` mode pointing at the local display server
+(`http://localhost:{port}/`). It:
+
+- waits for the backend to be reachable before starting (`ExecStartPre`),
+- runs in the graphical session (`DISPLAY=:0`),
+- restarts automatically if Chrome is closed.
+
+Requires a desktop/X server on the device and `google-chrome-stable` or
+`chromium`. Skip it with `pat-sig install --no-kiosk`.
 
 ---
 

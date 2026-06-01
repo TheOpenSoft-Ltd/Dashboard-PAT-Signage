@@ -6,8 +6,11 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".config" / "pat-sig"
 INSTALLED_PROJECT_DIR = CONFIG_DIR / "dsm"
 
-# systemd service name for the signage display process.
+# systemd service name for the signage display process (gunicorn backend).
 SERVICE_NAME = "pat-sig"
+
+# systemd service name for the kiosk (Chrome fullscreen) process.
+KIOSK_SERVICE_NAME = "pat-sig-kiosk"
 
 
 def get_package_dir() -> Path:

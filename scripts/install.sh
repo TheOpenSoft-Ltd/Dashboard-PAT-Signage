@@ -52,10 +52,11 @@ install_dependencies_linux() {
   detect_linux_distro
   log "Detected Linux ($DISTRO_ID)"
   case "$DISTRO_ID" in
-    ubuntu|debian|pop|linuxmint|elementary)
+    ubuntu|debian|raspbian|pop|linuxmint|elementary)
       UPDATE_CMD="sudo apt update"
       INSTALL_CMD="sudo apt install -y"
-      PACKAGES=(python3 python3-pip python3-venv git pipx curl tar)
+      # chromium-browser for the kiosk display (Raspberry Pi OS).
+      PACKAGES=(python3 python3-pip python3-venv git pipx curl tar chromium-browser)
       ;;
     fedora|rhel|centos|rocky|almalinux)
       UPDATE_CMD="sudo dnf check-update || true"
