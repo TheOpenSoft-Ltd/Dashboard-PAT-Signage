@@ -9,8 +9,7 @@ description = "PAT Digital Signage (DSM) edge display system"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "django===5.2.13",
-    "logging>=0.4.9.6",
+    "django==5.2.13",
     "rich-click>=1.9.7",
     "rich>=13.0.0",
     "paho-mqtt>=1.6.1",

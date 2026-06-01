@@ -48,60 +48,129 @@ detect_linux_distro() {
   DISTRO_VERSION="${VERSION_ID:-}"
 }
 
-install_dependencies_linux() {
+# --- Python / tool provisioning -------------------------------------------
+# Django 5.2 requires Python >= 3.10; this project standardizes on 3.11.
+# Debian bullseye (and other older LTS) ship only Python 3.9 and have no
+# `pipx` apt package, so we provision a prebuilt CPython 3.11 + pipx via uv
+# WITHOUT touching the system Python.
+PY_REQ_MINOR=11
+UV_BIN="$HOME/.local/bin/uv"
+PYTHON_BIN=""
+PIPX_BIN=""
+
+find_python() {
+  # Print the path to a Python >= 3.$PY_REQ_MINOR on success; else return 1.
+  local cand
+  for cand in python3.13 python3.12 python3.11; do
+    command -v "$cand" >/dev/null 2>&1 && { command -v "$cand"; return 0; }
+  done
+  if command -v python3 >/dev/null 2>&1 \
+     && python3 -c "import sys; exit(0 if sys.version_info[:2] >= (3, $PY_REQ_MINOR) else 1)" 2>/dev/null; then
+    command -v python3
+    return 0
+  fi
+  return 1
+}
+
+ensure_uv() {
+  if command -v uv >/dev/null 2>&1; then UV_BIN="$(command -v uv)"; return; fi
+  [[ -x "$UV_BIN" ]] && return
+  log "Installing uv (prebuilt Python provisioner)..."
+  local target tmp
+  case "$(uname -m)" in
+    x86_64|amd64)  target="x86_64-unknown-linux-gnu" ;;
+    aarch64|arm64) target="aarch64-unknown-linux-gnu" ;;
+    armv7l)        target="armv7-unknown-linux-gnueabihf" ;;
+    *) error "Unsupported architecture for uv: $(uname -m)" ;;
+  esac
+  tmp=$(mktemp -d)
+  curl -fsSL -o "$tmp/uv.tar.gz" \
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-${target}.tar.gz" \
+    || error "Failed to download uv"
+  tar -xzf "$tmp/uv.tar.gz" -C "$tmp"
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$tmp/uv-${target}/uv"  "$UV_BIN"
+  install -m 755 "$tmp/uv-${target}/uvx" "$HOME/.local/bin/uvx" 2>/dev/null || true
+  rm -rf "$tmp"
+}
+
+ensure_python() {
+  if PYTHON_BIN="$(find_python)"; then
+    log "Using Python: $PYTHON_BIN ($("$PYTHON_BIN" --version 2>&1))"
+    return
+  fi
+  log "Python >= 3.$PY_REQ_MINOR not found; provisioning prebuilt CPython 3.$PY_REQ_MINOR via uv..."
+  ensure_uv
+  "$UV_BIN" python install "3.$PY_REQ_MINOR" || error "Failed to install Python 3.$PY_REQ_MINOR via uv"
+  PYTHON_BIN="$("$UV_BIN" python find "3.$PY_REQ_MINOR")"
+  [[ -x "$PYTHON_BIN" ]] || error "Provisioned Python interpreter not found"
+  ln -sf "$PYTHON_BIN" "$HOME/.local/bin/python3.$PY_REQ_MINOR"
+  log "Provisioned Python: $PYTHON_BIN"
+}
+
+ensure_pipx() {
+  if command -v pipx >/dev/null 2>&1; then PIPX_BIN="$(command -v pipx)"; return; fi
+  if [[ -x "$HOME/.local/bin/pipx" ]]; then PIPX_BIN="$HOME/.local/bin/pipx"; return; fi
+  log "Installing pipx (via $PYTHON_BIN)..."
+  "$PYTHON_BIN" -m pip install --user --quiet pipx >&2 || error "Failed to install pipx"
+  PIPX_BIN="$HOME/.local/bin/pipx"
+  [[ -x "$PIPX_BIN" ]] || error "pipx not found after install"
+  "$PIPX_BIN" ensurepath >/dev/null 2>&1 || true
+}
+
+install_system_packages() {
+  # Best-effort: system tools + the kiosk browser. Python and pipx are
+  # provisioned separately (ensure_python/ensure_pipx) so a missing distro
+  # `pipx` package (e.g. on Debian bullseye) does not abort the install.
   detect_linux_distro
   log "Detected Linux ($DISTRO_ID)"
+  local UPDATE_CMD INSTALL_CMD
+  local -a PACKAGES
   case "$DISTRO_ID" in
     ubuntu|debian|raspbian|pop|linuxmint|elementary)
       UPDATE_CMD="sudo apt update"
       INSTALL_CMD="sudo apt install -y"
       # chromium-browser for the kiosk display (Raspberry Pi OS).
-      PACKAGES=(python3 python3-pip python3-venv git pipx curl tar chromium-browser)
+      PACKAGES=(git curl tar python3-pip chromium-browser)
       ;;
     fedora|rhel|centos|rocky|almalinux)
       UPDATE_CMD="sudo dnf check-update || true"
       INSTALL_CMD="sudo dnf install -y"
-      PACKAGES=(python3 python3-pip git pipx curl tar)
+      PACKAGES=(git curl tar python3-pip chromium)
       ;;
     arch|archarm|manjaro|endeavouros)
       UPDATE_CMD="sudo pacman -Sy"
       INSTALL_CMD="sudo pacman -S --noconfirm"
-      PACKAGES=(python python-pip git python-pipx curl tar)
+      PACKAGES=(git curl tar python-pip chromium)
       ;;
     alpine)
       UPDATE_CMD="sudo apk update"
       INSTALL_CMD="sudo apk add"
-      PACKAGES=(python3 py3-pip git pipx curl tar)
+      PACKAGES=(git curl tar py3-pip chromium)
       ;;
     *)
-      error "Unsupported Linux distribution: $DISTRO_ID"
+      log "Unknown distribution '$DISTRO_ID' — skipping system package install"
+      return 0
       ;;
   esac
-  log "Installing dependencies..."
-  eval "$UPDATE_CMD"
-  $INSTALL_CMD "${PACKAGES[@]}"
-
-  if command -v pipx >/dev/null 2>&1; then
-    pipx ensurepath >/dev/null 2>&1 || true
-  fi
-  log "Dependencies installed successfully"
+  log "Installing system packages: ${PACKAGES[*]}"
+  eval "$UPDATE_CMD" || log "warning: package index update failed (continuing)"
+  $INSTALL_CMD "${PACKAGES[@]}" || log "warning: some system packages failed to install (continuing)"
 }
 
 check_dependencies() {
-  local missing=false
-  command -v python3 >/dev/null 2>&1 || missing=true
-  command -v git >/dev/null 2>&1 || missing=true
-  command -v tar >/dev/null 2>&1 || missing=true
-  command -v pipx >/dev/null 2>&1 || missing=true
-
-  if [[ "$missing" == "true" ]]; then
-    if [[ "$AUTO_INSTALL" == "true" ]]; then
-      install_dependencies_linux
-    else
-      error "Missing required dependencies"
-    fi
+  if [[ "$AUTO_INSTALL" == "true" ]]; then
+    install_system_packages
+    ensure_python
+    ensure_pipx
+  else
+    PYTHON_BIN="$(find_python)" || error "Python >= 3.$PY_REQ_MINOR is required (not found)"
+    command -v pipx >/dev/null 2>&1 || error "pipx is required (omit --no-auto-install to provision it)"
+    PIPX_BIN="$(command -v pipx)"
+    command -v git >/dev/null 2>&1 || error "git is required"
+    command -v tar >/dev/null 2>&1 || error "tar is required"
   fi
-  log "All dependencies available"
+  log "Dependencies ready (python: $PYTHON_BIN, pipx: $PIPX_BIN)"
 }
 
 parse_args() {
@@ -143,7 +212,10 @@ download_and_install() {
 
   local version_tag="$version"
   [[ "$version_tag" =~ ^v ]] || version_tag="v$version_tag"
+  # Strip the leading "v" (and a stray leading "." from malformed tags such as
+  # "v.0.1.0") to derive the asset's version number.
   local version_number="${version_tag#v}"
+  version_number="${version_number#.}"
   local url="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$version_tag/pat_sig-${version_number}.tar.gz"
   TEMP_DIR=$(mktemp -d)
 
@@ -153,13 +225,13 @@ download_and_install() {
   curl -fsSL -o "$archive" "$url" || error "Download failed"
 
   # remove old version
-  if pipx list | grep -q "pat-sig"; then
+  if "$PIPX_BIN" list 2>/dev/null | grep -q "pat-sig"; then
     log "Removing old PAT Signage version..."
-    pipx uninstall pat-sig >/dev/null 2>&1 || true
+    "$PIPX_BIN" uninstall pat-sig >/dev/null 2>&1 || true
   fi
 
-  log "Installing PAT Signage..."
-  pipx install "$archive" >&2 || error "pipx install failed"
+  log "Installing PAT Signage (Python $("$PYTHON_BIN" --version 2>&1 | awk '{print $2}'))..."
+  "$PIPX_BIN" install --python "$PYTHON_BIN" "$archive" >&2 || error "pipx install failed"
   echo "$archive"
 }
 
@@ -180,8 +252,19 @@ copy_project() {
   [[ -d "$project_src" ]] || error "Project source not found in archive"
 
   mkdir -p "$PROJECT_DEST"
-  # Preserve an existing .env + db.sqlite3 across upgrades.
+  # Preserve an existing .env + db.sqlite3 across upgrades: the release archive
+  # ships template copies of both, so stash any existing ones, copy the new
+  # project over, then restore them.
+  local preserve_bak item
+  preserve_bak=$(mktemp -d)
+  for item in .env db.sqlite3; do
+    [[ -f "$PROJECT_DEST/$item" ]] && cp -p "$PROJECT_DEST/$item" "$preserve_bak/$item"
+  done
   cp -r "$project_src"/. "$PROJECT_DEST/"
+  for item in .env db.sqlite3; do
+    [[ -f "$preserve_bak/$item" ]] && cp -p "$preserve_bak/$item" "$PROJECT_DEST/$item"
+  done
+  rm -rf "$preserve_bak"
   log "Project copied to:"
   log "  $PROJECT_DEST"
   rm -rf "$extract_dir"
@@ -216,6 +299,9 @@ ENV
 
 main() {
   parse_args "$@"
+  # pipx and the provisioned Python live in ~/.local/bin; make sure it is on
+  # PATH for this run (a non-login shell may not include it).
+  export PATH="$HOME/.local/bin:$PATH"
   trap '[[ -d "${TEMP_DIR:-}" ]] && rm -rf "$TEMP_DIR"' EXIT
   log "Checking dependencies..."
   check_dependencies
@@ -230,8 +316,8 @@ main() {
 
   # Initialize the database (creates db.sqlite3 + tables in the installed dir).
   log "Applying database migrations..."
-  pat-sig run --migrate --no-server >/dev/null 2>&1 \
-    || (cd "$PROJECT_DEST" && python3 manage.py migrate --noinput) || true
+  "$HOME/.local/bin/pat-sig" run --migrate --no-server >/dev/null 2>&1 \
+    || (cd "$PROJECT_DEST" && "$PYTHON_BIN" manage.py migrate --noinput) || true
 
   cat <<EOF
 
