@@ -54,3 +54,25 @@ class DSMTask(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.status})"
+
+
+class OutboxReport(models.Model):
+    """Durable queue of device -> backend MQTT reports.
+
+    Every report is persisted here first; a row is deleted only after it is
+    successfully published. Because it lives in the local SQLite DB it survives
+    process restarts, so reports are never lost while the backend/broker is
+    unreachable — they are resent on reconnect / next scheduler tick.
+    """
+
+    topic = models.CharField(max_length=255)
+    payload = models.TextField()
+    attempts = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "outbox_report"
+        ordering = ["created_at", "id"]
+
+    def __str__(self):
+        return f"{self.topic} (#{self.pk})"

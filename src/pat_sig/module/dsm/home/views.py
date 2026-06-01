@@ -4,12 +4,22 @@ from django.shortcuts import render
 from home.models import DSMTask
 
 
+ALERT_TYPES = ["ALERTHIGHT", "ALERTMEDIUM", "ALERTLOW"]
+
+
 def home(request):
+    # An alert that is playing always takes priority over a PUBLICRELATION task.
     running_task = (
-        DSMTask.objects.filter(status="playing")
-        .order_by("date_started_at", "time_started_at")
+        DSMTask.objects.filter(status="playing", task_type__in=ALERT_TYPES)
+        .order_by("-updated_at")
         .first()
     )
+    if not running_task:
+        running_task = (
+            DSMTask.objects.filter(status="playing")
+            .order_by("date_started_at", "time_started_at")
+            .first()
+        )
     if running_task:
         media_type = running_task.media_type
         if running_task.media_local_path:

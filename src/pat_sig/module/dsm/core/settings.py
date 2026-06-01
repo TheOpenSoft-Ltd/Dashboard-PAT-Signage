@@ -116,11 +116,11 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 SIGNAGE_VIDEO_MUTED = False
 
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-MQTT_KEEPALIVE = 60
+MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_KEEPALIVE = int(os.getenv("MQTT_KEEPALIVE", "10"))
 MQTT_TOPIC = "pat-sig/+/data"
-MQTT_TLS_ENABLED = False
+MQTT_TLS_ENABLED = os.getenv("MQTT_TLS_ENABLED", "false").lower() == "true"
 
 DSM_ID = os.getenv("DSM_ID", "")
 DEVICE_ID = os.getenv("DEVICE_ID", "")

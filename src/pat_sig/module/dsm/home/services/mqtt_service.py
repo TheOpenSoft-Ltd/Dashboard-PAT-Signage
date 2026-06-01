@@ -39,12 +39,19 @@ class MqttService:
             if device_id:
                 topic = f"pat-sig/{device_id}/data"
                 status_topic = f"pat-sig/{device_id}/status"
+                alert_topic = f"pat-sig/{device_id}/alert"
             else:
                 topic = getattr(settings, "MQTT_TOPIC", "pat-sig/+/data")
                 status_topic = "pat-sig/+/status"
+                alert_topic = "pat-sig/+/alert"
             client.subscribe(topic)
             client.subscribe(status_topic)
-            logger.info(f"MQTT subscribed to: {topic}, {status_topic}")
+            client.subscribe(alert_topic)
+            logger.info(
+                f"MQTT subscribed to: {topic}, {status_topic}, {alert_topic}"
+            )
+            # Resend anything queued while we were offline.
+            self.flush_outbox()
         else:
             logger.error(f"MQTT connection failed with code: {rc}")
             self._schedule_reconnect()
@@ -123,6 +130,55 @@ class MqttService:
         else:
             logger.warning("MQTT not connected, cannot publish")
             return False
+
+    def publish_reliable(self, topic, payload):
+        """Durable device -> backend report: persist to the outbox first, then
+        try to flush. Nothing is lost if the broker/backend is unreachable; the
+        row is resent on reconnect (_on_connect) or the next scheduler tick.
+        """
+        from home.models import OutboxReport
+
+        body = (
+            payload
+            if isinstance(payload, str)
+            else json.dumps(payload, ensure_ascii=False)
+        )
+        try:
+            OutboxReport.objects.create(topic=topic, payload=body)
+        except Exception as e:
+            logger.error(f"Failed to enqueue outbox report: {e}")
+            return
+        self.flush_outbox()
+
+    def flush_outbox(self):
+        """Publish queued outbox reports in order, deleting each on success.
+
+        Stops at the first failure so ordering is preserved and unsent rows
+        survive until the broker/backend is reachable again. Uses QoS 1 so the
+        broker acknowledges receipt.
+        """
+        if not self._connected:
+            return
+        from home.models import OutboxReport
+
+        try:
+            rows = list(OutboxReport.objects.all().order_by("created_at", "id"))
+        except Exception as e:
+            logger.error(f"Failed to read outbox: {e}")
+            return
+
+        for row in rows:
+            result = self._client.publish(row.topic, row.payload, qos=1)
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"Outbox flushed -> {row.topic}: {row.payload}")
+                row.delete()
+            else:
+                row.attempts += 1
+                row.save(update_fields=["attempts"])
+                logger.warning(
+                    f"Outbox flush failed (rc={result.rc}); will retry #{row.pk}"
+                )
+                break
 
     def is_connected(self):
         return self._connected

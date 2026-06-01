@@ -1,22 +1,30 @@
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
 [project]
 name = "pat-sig"
 version = "0.1.0"
-description = "Add your description here"
+description = "PAT Digital Signage (DSM) edge display system"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "django===5.2.13",
     "logging>=0.4.9.6",
     "rich-click>=1.9.7",
+    "rich>=13.0.0",
     "paho-mqtt>=1.6.1",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
+    "gunicorn>=23.0.0",
 ]
+
 [project.scripts]
 pat-sig = "pat_sig.__main__:run"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.uv.build-backend]
+module-name = "pat_sig"
+module-root = "src"
 
 [tool.black]
 line-length=88

@@ -119,7 +119,24 @@ def _report_status(task, status: str):
         },
         ensure_ascii=False,
     )
-    mqtt_service.publish(f"pat-sig/{device_id}/action", action_payload)
+    mqtt_service.publish_reliable(f"pat-sig/{device_id}/action", action_payload)
+
+
+def delete_task_media(task):
+    """Delete the locally-downloaded media file for a finished task and clear
+    its media_local_path. Called when a task becomes "completed" to free space.
+    """
+    if not task.media_local_path:
+        return
+    filepath = settings.MEDIA_ROOT / task.media_local_path
+    try:
+        if filepath.exists():
+            filepath.unlink()
+            logger.info(f"Deleted media file {filepath}")
+        task.media_local_path = None
+        task.save(update_fields=["media_local_path", "updated_at"])
+    except Exception as e:
+        logger.error(f"Failed to delete media {filepath}: {e}")
 
 
 def handle_status_message(payload: str, dsm_id: str = None):
@@ -172,11 +189,85 @@ def handle_status_message(payload: str, dsm_id: str = None):
     # that was force-skipped reports "downloaded" so the dashboard reflects it).
     _report_status(task, new_status)
 
+    if new_status == "completed":
+        delete_task_media(task)
+
+
+ALERT_TYPES = {"ALERTHIGHT", "ALERTMEDIUM", "ALERTLOW"}
+
+
+def alert_is_active() -> bool:
+    """True while an alert task is playing. While active, the scheduler must NOT
+    resume PUBLICRELATION tasks (alert has the screen). Backed by the DB so it
+    survives a power-cut/reboot.
+    """
+    return DSMTask.objects.filter(
+        status="playing", task_type__in=ALERT_TYPES
+    ).exists()
+
+
+def handle_alert_message(payload: str):
+    """Command an alert on the /alert channel.
+
+    action="play" (default): take over the screen NOW. Media is pre-downloaded
+        via /data, so /alert carries only the task identity. Any other playing
+        task is paused (back to "downloaded") and the alert becomes focused.
+    action="clear": the level returned to normal -> stop the alert (back to
+        "downloaded") so other tasks can resume.
+    The resulting status is reported back to the backend (durably, via the
+    outbox) so the backend knows the device actually received the trigger.
+    """
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in alert message: {e}")
+        return
+
+    dsm_task_id = data.get("DSMTaskId")
+    action = (data.get("action") or "play").lower()
+    if not dsm_task_id:
+        logger.warning("Alert message missing DSMTaskId")
+        return
+
+    try:
+        task = DSMTask.objects.get(dsm_task_id=dsm_task_id)
+    except DSMTask.DoesNotExist:
+        logger.warning(f"Alert for unknown task {dsm_task_id} (not downloaded?)")
+        return
+
+    if action == "clear":
+        # Stop the alert; the scheduler may resume PR tasks afterwards.
+        task.status = "downloaded"
+        task.save(update_fields=["status", "updated_at"])
+        logger.info(f"ALERT cleared: {dsm_task_id}")
+        # Report cleared as a normal-status ack so the backend can stop resending.
+        _report_status(task, "downloaded")
+        return
+
+    # action == "play"
+    if not task.media_local_path:
+        logger.warning(f"Alert task {dsm_task_id} has no downloaded media")
+        return
+
+    # Pause any other task currently playing so the alert gets full focus.
+    DSMTask.objects.filter(status="playing").exclude(
+        dsm_task_id=dsm_task_id
+    ).update(status="downloaded")
+
+    task.status = "playing"
+    task.save(update_fields=["status", "updated_at"])
+    logger.info(f"ALERT task focused (playing now): {dsm_task_id}")
+    _report_status(task, "playing")
+
 
 def handle_mqtt_message(sender, topic: str, payload: str, dsm_id: str = None, **kwargs):
     # Status/command channel: pat-sig/{deviceId}/status (vs the /data task feed)
     if topic and topic.endswith("/status"):
         handle_status_message(payload, dsm_id)
+        return
+    # Alert channel: pat-sig/{deviceId}/alert -> play immediately (override)
+    if topic and topic.endswith("/alert"):
+        handle_alert_message(payload)
         return
     try:
         data = json.loads(payload)
@@ -220,17 +311,10 @@ def handle_mqtt_message(sender, topic: str, payload: str, dsm_id: str = None, **
 
         logger.info(f"DSMTask {'created' if created else 'updated'}: {dsm_task_id}")
 
+        # /data only PRE-DOWNLOADS the media; it never starts playback.
+        # Playing an alert is commanded separately via the /alert channel.
         if status == "downloaded":
-            device_id = getattr(settings, "DEVICE_ID", "")
-            if device_id:
-                action_topic = f"pat-sig/{device_id}/action"
-                action_payload = json.dumps({
-                    "DSMTaskId": dsm_task_id,
-                    "dsm_id": dsm_id,
-                    "status": "downloaded",
-                    "name": name,
-                }, ensure_ascii=False)
-                mqtt_service.publish(action_topic, action_payload)
+            _report_status(task, "downloaded")
 
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in MQTT message: {e}")
