@@ -1,0 +1,39 @@
+# disabled DS apple
+**/.DS_Store
+
+# disable SQLlite file
+**/*.sqlite3
+
+# python generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# venv
+.venv
+
+# env
+*.env
+
+# certs folder
+certs/
+
+# logs folder
+logs/
+
+# editor
+.vscode/
+.idea/
+pyrightconfig.json
+
+snapshot_report.html
+*.afdesign
+*.afdesign*
+*.afphoto
+*.afphoto*
+.ruff_cache
+
+**/media/
