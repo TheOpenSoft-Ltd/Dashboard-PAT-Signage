@@ -1,5 +1,6 @@
 import getpass
 import os
+import pwd
 import shutil
 import subprocess
 import sys
@@ -9,7 +10,6 @@ import rich_click as click
 from rich.console import Console
 
 from pat_sig.config import (
-    CONFIG_DIR,
     KIOSK_SERVICE_NAME,
     SERVICE_NAME,
     get_project_dir,
@@ -38,6 +38,11 @@ WantedBy=multi-user.target
 # Targets Raspberry Pi OS: Bookworm defaults to Wayland (labwc/wayfire) on Pi
 # 4/5, older releases use X11. The wrapper script picks the right
 # WAYLAND_DISPLAY / DISPLAY at runtime so the same unit works on both.
+#
+# IMPORTANT: the kiosk runs as the user who OWNS the seat's graphical session
+# (the autologin desktop user, e.g. `pi`) — not the user running this
+# installer, which may be a separate headless admin account. {display_env}
+# carries the DISPLAY/XAUTHORITY (X11) or WAYLAND_DISPLAY needed to reach it.
 KIOSK_TEMPLATE = """[Unit]
 Description=PAT Signage Kiosk (Chromium)
 After=graphical.target {backend}.service
@@ -47,7 +52,7 @@ Wants={backend}.service
 Type=simple
 User={user}
 Environment=XDG_RUNTIME_DIR=/run/user/{uid}
-ExecStartPre=/bin/sh -c 'until curl -sf {url} >/dev/null; do sleep 2; done'
+{display_env}ExecStartPre=/bin/sh -c 'until curl -sf {url} >/dev/null; do sleep 2; done'
 ExecStart={launcher}
 Restart=always
 RestartSec=5
@@ -111,6 +116,11 @@ def _find_chrome() -> str | None:
     return None
 
 
+# The kiosk launcher is installed to a system path (not the admin user's
+# home) so the graphical-session user can execute it.
+KIOSK_LAUNCHER_PATH = "/usr/local/bin/pat-sig-kiosk.sh"
+
+
 def _install_unit(name: str, content: str) -> None:
     tmp = Path(f"/tmp/{name}.service")
     tmp.write_text(content)
@@ -118,6 +128,102 @@ def _install_unit(name: str, content: str) -> None:
         ["sudo", "cp", str(tmp), f"/etc/systemd/system/{name}.service"],
         check=False,
     )
+
+
+def _install_executable(dest: str, content: str) -> None:
+    tmp = Path(f"/tmp/{Path(dest).name}")
+    tmp.write_text(content)
+    subprocess.run(["sudo", "cp", str(tmp), dest], check=False)
+    subprocess.run(["sudo", "chmod", "755", dest], check=False)
+
+
+def _loginctl_show(session_id: str) -> dict:
+    out = subprocess.run(
+        [
+            "loginctl", "show-session", session_id,
+            "-p", "Name", "-p", "Type", "-p", "Active",
+            "-p", "Display", "-p", "Seat", "-p", "State",
+        ],
+        capture_output=True, text=True, check=False,
+    ).stdout
+    props = {}
+    for line in out.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+    return props
+
+
+def _detect_display_session():
+    """Find the local graphical session the kiosk should attach to.
+
+    Returns (user, uid, session_type, display, xauthority) for the active
+    seat's x11/wayland session, or None. The owner is typically the autologin
+    desktop user (e.g. `pi`), which is NOT necessarily the user running this
+    installer.
+    """
+    try:
+        listing = subprocess.run(
+            ["loginctl", "list-sessions", "--no-legend"],
+            capture_output=True, text=True, check=False,
+        ).stdout
+    except FileNotFoundError:
+        return None
+
+    best = None
+    for line in listing.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        props = _loginctl_show(parts[0])
+        if props.get("Type") not in ("x11", "wayland"):
+            continue
+        user = props.get("Name")
+        if not user:
+            continue
+        try:
+            uid = pwd.getpwnam(user).pw_uid
+        except KeyError:
+            continue
+        cand = (
+            user,
+            uid,
+            props["Type"],
+            props.get("Display") or ":0",
+            f"/home/{user}/.Xauthority",
+        )
+        if props.get("Active") == "yes" and props.get("Seat"):
+            return cand
+        best = best or cand
+    return best
+
+
+def _autologin_user():
+    """Fall back to the lightdm autologin user when no session is active yet."""
+    try:
+        text = Path("/etc/lightdm/lightdm.conf").read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("autologin-user=") and not line.startswith("#"):
+            return line.split("=", 1)[1].strip() or None
+    return None
+
+
+def _resolve_kiosk_session(install_user: str):
+    """Decide which user/uid/display the kiosk unit should target."""
+    session = _detect_display_session()
+    if session:
+        return session
+    name = _autologin_user()
+    if not name:
+        name = install_user
+    try:
+        uid = pwd.getpwnam(name).pw_uid
+    except KeyError:
+        uid = os.getuid()
+    return (name, uid, "x11", ":0", f"/home/{name}/.Xauthority")
 
 
 @click.command()
@@ -162,23 +268,35 @@ def install(host: str, port: int, kiosk: bool):
         else:
             # Kiosk opens the display locally; use localhost regardless of bind.
             url = f"http://localhost:{port}/"
-            uid = os.getuid()
 
-            # Write the Wayland/X11-aware launcher to ~/.config/pat-sig/kiosk.sh.
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            launcher_path = CONFIG_DIR / "kiosk.sh"
-            launcher_path.write_text(
+            # The kiosk must run as the user that owns the graphical session
+            # (autologin desktop user), not necessarily the installer user.
+            k_user, k_uid, k_type, k_display, k_xauth = _resolve_kiosk_session(
+                user
+            )
+            if k_type == "wayland":
+                display_env = "Environment=WAYLAND_DISPLAY=wayland-0\n"
+            else:
+                display_env = (
+                    f"Environment=DISPLAY={k_display}\n"
+                    f"Environment=XAUTHORITY={k_xauth}\n"
+                )
+
+            # Install the Wayland/X11-aware launcher to a system path the
+            # graphical-session user can execute.
+            _install_executable(
+                KIOSK_LAUNCHER_PATH,
                 KIOSK_LAUNCHER.format(
                     chrome=chrome, chrome_flags=CHROME_FLAGS, url=url
-                )
+                ),
             )
-            launcher_path.chmod(0o755)
 
             kiosk_unit = KIOSK_TEMPLATE.format(
                 backend=SERVICE_NAME,
-                user=user,
-                uid=uid,
-                launcher=str(launcher_path),
+                user=k_user,
+                uid=k_uid,
+                display_env=display_env,
+                launcher=KIOSK_LAUNCHER_PATH,
                 url=url,
             )
             _install_unit(KIOSK_SERVICE_NAME, kiosk_unit)
@@ -189,9 +307,11 @@ def install(host: str, port: int, kiosk: bool):
                 ["sudo", "systemctl", "enable", KIOSK_SERVICE_NAME],
                 check=False,
             )
+            target = "wayland-0" if k_type == "wayland" else k_display
             console.print(
                 f"[green]✓[/green] Installed kiosk service "
-                f"{KIOSK_SERVICE_NAME} (Chromium: {chrome})"
+                f"{KIOSK_SERVICE_NAME} as user '{k_user}' "
+                f"({k_type} {target}; Chromium: {chrome})"
             )
 
     console.print("Start with: [cyan]pat-sig start[/cyan]")
