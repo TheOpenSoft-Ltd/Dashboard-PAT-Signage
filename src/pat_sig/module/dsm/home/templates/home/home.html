@@ -1,0 +1,75 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/x-icon" href="{% static 'favicon.ico' %}" />
+    <title>Pattaya Smart Digital Signage</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        background: #000;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      .media-container {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .media-container img,
+      .media-container video {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="media-container" id="media-container">
+      {% if media_type == 'video' %} {% if "://" in media_url %}
+      <video autoplay loop {% if video_muted %}muted{% endif %} playsinline>
+        <source src="{{ media_url }}" type="video/{{ video_format }}" />
+      </video>
+      {% else %}
+      <video autoplay loop {% if video_muted %}muted{% endif %} playsinline>
+        <source src="{{ media_url }}" type="video/{{ video_format }}" />
+      </video>
+      {% endif %}       {% elif media_type == 'image' or media_type == 'gif' %} {% if "://" in media_url %}
+      <img src="{{ media_url }}" alt="Digital Signage" />
+      {% else %}
+      <img src="{{ media_url }}" alt="Digital Signage" />
+      {% endif %} {% else %}
+      <img src="{% static 'default.png' %}" alt="Digital Signage" />
+      {% endif %}
+    </div>
+    <script>
+      const mediaUrl = "{{ media_url }}";
+      let lastUrl = mediaUrl;
+
+      setInterval(async () => {
+        try {
+          const res = await fetch("{% url 'home:home' %}", {
+            headers: { Accept: "application/json" },
+          });
+          const data = await res.json();
+          if (data.media_url !== lastUrl) {
+            lastUrl = data.media_url;
+            location.reload();
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+      }, 5000);
+    </script>
+  </body>
+</html>
