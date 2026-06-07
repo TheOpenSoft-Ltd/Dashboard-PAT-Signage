@@ -7,10 +7,12 @@ name = "pat-sig"
 version = "0.1.0"
 description = "PAT Digital Signage (DSM) edge display system"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
-    "django===5.2.13",
-    "logging>=0.4.9.6",
+    # Django 4.2 LTS is the last series supporting Python 3.9 (Debian bullseye,
+    # the target image, ships 3.9). 5.x requires >=3.10 and no 5.x-only ORM
+    # features are used here.
+    "django>=4.2,<5.0",
     "rich-click>=1.9.7",
     "rich>=13.0.0",
     "paho-mqtt>=1.6.1",

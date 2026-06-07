@@ -29,7 +29,20 @@ class MqttService:
 
             tls_enabled = getattr(settings, "MQTT_TLS_ENABLED", False)
             if tls_enabled:
-                self._client.tls_set()
+                # Pass only the TLS material that is configured; an empty/None
+                # ca_certs falls back to the system trust store, and certfile/
+                # keyfile enable mutual-TLS client auth when both are set.
+                tls_kwargs = {}
+                ca_certs = getattr(settings, "MQTT_TLS_CA_CERTS", None)
+                certfile = getattr(settings, "MQTT_TLS_CERTFILE", None)
+                keyfile = getattr(settings, "MQTT_TLS_KEYFILE", None)
+                if ca_certs:
+                    tls_kwargs["ca_certs"] = ca_certs
+                if certfile:
+                    tls_kwargs["certfile"] = certfile
+                if keyfile:
+                    tls_kwargs["keyfile"] = keyfile
+                self._client.tls_set(**tls_kwargs)
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:

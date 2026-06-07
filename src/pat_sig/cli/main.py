@@ -3,6 +3,7 @@ import rich_click as click
 from pat_sig.cli.commands.init import init
 from pat_sig.cli.commands.run import run as run_cmd
 from pat_sig.cli.commands.install import install
+from pat_sig.cli.commands.list import list_tasks
 from pat_sig.cli.commands.service import (
     start,
     stop,
@@ -28,6 +29,7 @@ def cli():
 cli.add_command(init)
 cli.add_command(run_cmd)
 cli.add_command(install)
+cli.add_command(list_tasks)
 cli.add_command(start)
 cli.add_command(stop)
 cli.add_command(restart)

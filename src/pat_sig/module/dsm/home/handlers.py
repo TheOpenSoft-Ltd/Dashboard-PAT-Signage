@@ -1,3 +1,5 @@
+from __future__ import annotations  # PEP 604 (X | None) on Python 3.9
+
 import json
 import logging
 import mimetypes

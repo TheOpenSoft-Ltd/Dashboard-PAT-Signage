@@ -121,6 +121,11 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_KEEPALIVE = int(os.getenv("MQTT_KEEPALIVE", "10"))
 MQTT_TOPIC = "pat-sig/+/data"
 MQTT_TLS_ENABLED = os.getenv("MQTT_TLS_ENABLED", "false").lower() == "true"
+# Optional TLS material (paths on the device). Empty -> use system CAs / no
+# client certificate. CERTFILE + KEYFILE go together for mutual-TLS auth.
+MQTT_TLS_CA_CERTS = os.getenv("MQTT_TLS_CA_CERTS", "") or None
+MQTT_TLS_CERTFILE = os.getenv("MQTT_TLS_CERTFILE", "") or None
+MQTT_TLS_KEYFILE = os.getenv("MQTT_TLS_KEYFILE", "") or None
 
 DSM_ID = os.getenv("DSM_ID", "")
 DEVICE_ID = os.getenv("DEVICE_ID", "")
