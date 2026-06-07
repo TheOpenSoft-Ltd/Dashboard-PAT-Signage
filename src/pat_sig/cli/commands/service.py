@@ -3,12 +3,17 @@ import subprocess
 import rich_click as click
 from rich.console import Console
 
-from pat_sig.config import KIOSK_SERVICE_NAME, SERVICE_NAME
+from pat_sig.config import (
+    KIOSK_SERVICE_NAME,
+    SERVICE_NAME,
+    STREAM_SERVICE_NAME,
+)
 
 console = Console()
 
-# Both services managed together (backend first, then kiosk).
-SERVICES = [SERVICE_NAME, KIOSK_SERVICE_NAME]
+# All services managed together, in start order (backend, then kiosk, then
+# the screen streamer). Stop/uninstall walk this list in reverse.
+SERVICES = [SERVICE_NAME, KIOSK_SERVICE_NAME, STREAM_SERVICE_NAME]
 
 
 def _systemctl(action: str, services: list[str]) -> None:
@@ -36,20 +41,29 @@ def restart():
     _systemctl("restart", SERVICES)
 
 
+def _select_service(kiosk: bool, stream: bool) -> str:
+    if kiosk:
+        return KIOSK_SERVICE_NAME
+    if stream:
+        return STREAM_SERVICE_NAME
+    return SERVICE_NAME
+
+
 @click.command()
 @click.option("--kiosk", is_flag=True, help="Show the kiosk service instead.")
-def status(kiosk: bool):
+@click.option("--stream", is_flag=True, help="Show the stream service instead.")
+def status(kiosk: bool, stream: bool):
     """Show service status."""
-    svc = KIOSK_SERVICE_NAME if kiosk else SERVICE_NAME
-    subprocess.run(["systemctl", "status", svc], check=False)
+    subprocess.run(["systemctl", "status", _select_service(kiosk, stream)], check=False)
 
 
 @click.command()
 @click.option("-f", "--follow", is_flag=True, help="Follow log output")
 @click.option("--kiosk", is_flag=True, help="Show the kiosk service logs.")
-def logs(follow: bool, kiosk: bool):
+@click.option("--stream", is_flag=True, help="Show the stream service logs.")
+def logs(follow: bool, kiosk: bool, stream: bool):
     """Show service logs (journalctl)."""
-    svc = KIOSK_SERVICE_NAME if kiosk else SERVICE_NAME
+    svc = _select_service(kiosk, stream)
     cmd = ["journalctl", "-u", svc, "-n", "100"]
     if follow:
         cmd.append("-f")

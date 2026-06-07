@@ -1,3 +1,5 @@
+from __future__ import annotations  # PEP 604 (X | None) on Python 3.9
+
 import getpass
 import os
 import pwd
@@ -12,7 +14,11 @@ from rich.console import Console
 from pat_sig.config import (
     KIOSK_SERVICE_NAME,
     SERVICE_NAME,
+    STREAM_SCRIPT_PATH,
+    STREAM_SERVICE_NAME,
+    get_env_path,
     get_project_dir,
+    get_stream_script,
 )
 
 console = Console()
@@ -85,6 +91,28 @@ fi
 exec {chrome} {chrome_flags} $OZONE "{url}"
 """
 
+# Screen -> RTMP streamer. Runs as the graphical-session user (needs the
+# X11/Wayland display) and executes the bundled stream.sh. RTMP_URL and any
+# STREAM_* tuning are baked in as Environment= lines at install time (read from
+# the device .env) so the service works even when the graphical-session user
+# differs from the installer and can't read the installer's .env.
+STREAM_TEMPLATE = """[Unit]
+Description=PAT Signage Screen Stream (RTMP)
+After=graphical.target {kiosk}.service
+Wants=graphical.target
+
+[Service]
+Type=simple
+User={user}
+Environment=XDG_RUNTIME_DIR=/run/user/{uid}
+{display_env}{stream_env}ExecStart={script}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical.target
+"""
+
 # Chromium flags for a clean unattended kiosk.
 CHROME_FLAGS = (
     "--kiosk "
@@ -135,6 +163,25 @@ def _install_executable(dest: str, content: str) -> None:
     tmp.write_text(content)
     subprocess.run(["sudo", "cp", str(tmp), dest], check=False)
     subprocess.run(["sudo", "chmod", "755", dest], check=False)
+
+
+def _read_env_values(keys: tuple[str, ...]) -> dict[str, str]:
+    """Read selected KEY=VALUE pairs from the device .env (missing file -> {})."""
+    values: dict[str, str] = {}
+    try:
+        text = get_env_path().read_text()
+    except OSError:
+        return values
+    wanted = set(keys)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in wanted:
+            values[key] = value.strip()
+    return values
 
 
 def _loginctl_show(session_id: str) -> dict:
@@ -234,8 +281,13 @@ def _resolve_kiosk_session(install_user: str):
     default=True,
     help="Also install the Chrome kiosk service.",
 )
-def install(host: str, port: int, kiosk: bool):
-    """Install the systemd services for the signage display (+ Chrome kiosk)."""
+@click.option(
+    "--stream/--no-stream",
+    default=True,
+    help="Also install the screen->RTMP stream service (needs RTMP_URL in .env).",
+)
+def install(host: str, port: int, kiosk: bool, stream: bool):
+    """Install the systemd services for the signage display (+ kiosk + stream)."""
     user = getpass.getuser()
     workdir = str(get_project_dir())
 
@@ -257,6 +309,21 @@ def install(host: str, port: int, kiosk: bool):
     subprocess.run(["sudo", "systemctl", "enable", SERVICE_NAME], check=False)
     console.print(f"[green]✓[/green] Installed service {SERVICE_NAME}")
 
+    # Both the kiosk and the streamer must run as the user that owns the
+    # graphical session (autologin desktop user, not necessarily the installer).
+    # Resolve it once and derive the DISPLAY/WAYLAND environment they share.
+    k_user = k_uid = k_type = k_display = k_xauth = None
+    display_env = ""
+    if kiosk or stream:
+        k_user, k_uid, k_type, k_display, k_xauth = _resolve_kiosk_session(user)
+        if k_type == "wayland":
+            display_env = "Environment=WAYLAND_DISPLAY=wayland-0\n"
+        else:
+            display_env = (
+                f"Environment=DISPLAY={k_display}\n"
+                f"Environment=XAUTHORITY={k_xauth}\n"
+            )
+
     if kiosk:
         chrome = _find_chrome()
         if not chrome:
@@ -268,19 +335,6 @@ def install(host: str, port: int, kiosk: bool):
         else:
             # Kiosk opens the display locally; use localhost regardless of bind.
             url = f"http://localhost:{port}/"
-
-            # The kiosk must run as the user that owns the graphical session
-            # (autologin desktop user), not necessarily the installer user.
-            k_user, k_uid, k_type, k_display, k_xauth = _resolve_kiosk_session(
-                user
-            )
-            if k_type == "wayland":
-                display_env = "Environment=WAYLAND_DISPLAY=wayland-0\n"
-            else:
-                display_env = (
-                    f"Environment=DISPLAY={k_display}\n"
-                    f"Environment=XAUTHORITY={k_xauth}\n"
-                )
 
             # Install the Wayland/X11-aware launcher to a system path the
             # graphical-session user can execute.
@@ -312,6 +366,57 @@ def install(host: str, port: int, kiosk: bool):
                 f"[green]✓[/green] Installed kiosk service "
                 f"{KIOSK_SERVICE_NAME} as user '{k_user}' "
                 f"({k_type} {target}; Chromium: {chrome})"
+            )
+
+    if stream:
+        env_vals = _read_env_values(
+            (
+                "RTMP_URL",
+                "STREAM_FPS",
+                "STREAM_RESOLUTION",
+                "STREAM_BITRATE",
+                "STREAM_ENCODER",
+                "STREAM_AUDIO",
+            )
+        )
+        rtmp = env_vals.get("RTMP_URL")
+        if not rtmp:
+            console.print(
+                "[yellow]![/yellow] RTMP_URL not set — skipping stream service. "
+                f"Add RTMP_URL=rtmp://… to {get_env_path()} and re-run "
+                "pat-sig install."
+            )
+        else:
+            # Bake the stream config into the unit so it works even when the
+            # graphical-session user can't read the installer's .env.
+            stream_env = "".join(
+                f"Environment={key}={val}\n"
+                for key, val in env_vals.items()
+                if val
+            )
+            # Copy the bundled stream.sh to a system path the graphical user
+            # can execute (same reason as the kiosk launcher).
+            _install_executable(STREAM_SCRIPT_PATH, get_stream_script().read_text())
+
+            stream_unit = STREAM_TEMPLATE.format(
+                kiosk=KIOSK_SERVICE_NAME,
+                user=k_user,
+                uid=k_uid,
+                display_env=display_env,
+                stream_env=stream_env,
+                script=STREAM_SCRIPT_PATH,
+            )
+            _install_unit(STREAM_SERVICE_NAME, stream_unit)
+            subprocess.run(
+                ["sudo", "systemctl", "daemon-reload"], check=False
+            )
+            subprocess.run(
+                ["sudo", "systemctl", "enable", STREAM_SERVICE_NAME],
+                check=False,
+            )
+            console.print(
+                f"[green]✓[/green] Installed stream service "
+                f"{STREAM_SERVICE_NAME} as user '{k_user}' → {rtmp}"
             )
 
     console.print("Start with: [cyan]pat-sig start[/cyan]")

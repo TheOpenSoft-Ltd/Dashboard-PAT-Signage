@@ -153,9 +153,18 @@ install_system_packages() {
       return 0
       ;;
   esac
+  # Screen-streaming tools for pat-sig-stream: ffmpeg (X11 x11grab) and
+  # wf-recorder (Wayland). Installed in a SEPARATE command so a package that is
+  # missing from a given repo (e.g. wf-recorder on minimal images) doesn't make
+  # the core install (chromium/git) fail as a batch.
+  local -a STREAM_PACKAGES=(ffmpeg wf-recorder)
+
   log "Installing system packages: ${PACKAGES[*]}"
   eval "$UPDATE_CMD" || log "warning: package index update failed (continuing)"
   $INSTALL_CMD "${PACKAGES[@]}" || log "warning: some system packages failed to install (continuing)"
+
+  log "Installing screen-streaming packages: ${STREAM_PACKAGES[*]}"
+  $INSTALL_CMD "${STREAM_PACKAGES[@]}" || log "warning: streaming packages failed to install (stream service optional, continuing)"
 }
 
 check_dependencies() {

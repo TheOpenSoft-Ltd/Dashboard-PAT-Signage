@@ -41,7 +41,13 @@ Dashobard-DSM (backend)                         PAT Signage device (this)
 ## Quick start
 
 ```bash
-# one-shot installer (uv + deps + init + service)
+# one-shot installer on the device (uv + system deps incl. ffmpeg/wf-recorder + pat-sig)
+curl -fsSL https://raw.githubusercontent.com/TheOpenSoft-Ltd/Dashboard-PAT-Signage/main/scripts/install.sh | bash
+```
+
+Or, from a checkout of this repo:
+
+```bash
 ./scripts/install.sh
 ```
 
@@ -63,13 +69,14 @@ uv run pat-sig status   # check it
 |---|---|
 | `pat-sig init` | Write device config `.env` (DEVICE_ID, DSM_ID, MQTT settings) |
 | `pat-sig run` | Run the display server (gunicorn, production). `--dev` uses Django's runserver; `--host`, `--port`, `--no-migrate` |
-| `pat-sig install` | Install the `pat-sig` backend **and** `pat-sig-kiosk` (Chrome) systemd services (`--host`, `--port`, `--no-kiosk`) |
-| `pat-sig start` | Start both services (backend + kiosk) |
-| `pat-sig stop` | Stop both services |
-| `pat-sig restart` | Restart both services |
-| `pat-sig status [--kiosk]` | Show service status (add `--kiosk` for the kiosk) |
-| `pat-sig logs [-f] [--kiosk]` | Show service logs (journalctl) |
-| `pat-sig uninstall` | Stop, disable and remove both services |
+| `pat-sig install` | Install the `pat-sig` backend, `pat-sig-kiosk` (Chrome) **and** `pat-sig-stream` (RTMP) systemd services (`--host`, `--port`, `--no-kiosk`, `--no-stream`) |
+| `pat-sig list` | Show DSM tasks from the local DB as a table (`--status`, `--type`, `-n/--limit`) |
+| `pat-sig start` | Start all services (backend + kiosk + stream) |
+| `pat-sig stop` | Stop all services |
+| `pat-sig restart` | Restart all services |
+| `pat-sig status [--kiosk\|--stream]` | Show service status (add `--kiosk`/`--stream` to target those) |
+| `pat-sig logs [-f] [--kiosk\|--stream]` | Show service logs (journalctl) |
+| `pat-sig uninstall` | Stop, disable and remove all services |
 
 ### Kiosk (Chrome fullscreen)
 
@@ -84,6 +91,43 @@ Chrome / Chromium in `--kiosk` mode pointing at the local display server
 Requires a desktop/X server on the device and `google-chrome-stable` or
 `chromium`. Skip it with `pat-sig install --no-kiosk`.
 
+### Screen streaming (RTMP)
+
+`pat-sig install` also installs **`pat-sig-stream.service`**, which captures the
+live screen (what the kiosk shows) and pushes it to an RTMP server for remote
+monitoring. The streamer (bundled `module/worker/stream.sh`) auto-detects the
+graphical backend — X11 (Bullseye) via `ffmpeg x11grab`, Wayland (Bookworm on
+Pi 4/5) via `wf-recorder` — and runs as the graphical-session user.
+
+The capture tools (`ffmpeg` for X11, `wf-recorder` for Wayland) are installed
+automatically by `scripts/install.sh`.
+
+The service is installed **only when `RTMP_URL` is set in the device `.env`**
+(otherwise it is skipped with a hint). The stream config is read from `.env` at
+install time and baked into the unit, so set it before installing:
+
+```bash
+# 1. add the RTMP target (+ any tuning) to ~/.config/pat-sig/dsm/.env
+echo 'RTMP_URL=rtmp://10.0.0.5/live/ps12' >> ~/.config/pat-sig/dsm/.env
+
+# 2. (re-)install + start
+pat-sig install
+pat-sig start
+pat-sig status --stream      # or: pat-sig logs --stream -f
+```
+
+Skip it with `pat-sig install --no-stream`. The `.env` keys (also honoured as
+environment variables if you run the script directly):
+
+| `.env` key | Default | Meaning |
+|---|---|---|
+| `RTMP_URL` | — | RTMP target, e.g. `rtmp://host/app/key` (required) |
+| `STREAM_FPS` | `25` | Frames per second |
+| `STREAM_RESOLUTION` | native | Scale to `WxH` (e.g. `1280x720`); empty = native |
+| `STREAM_BITRATE` | `2500k` | Video bitrate |
+| `STREAM_ENCODER` | `libx264` | `h264_v4l2m2m` = Pi hardware H.264 (Pi 4 and earlier) |
+| `STREAM_AUDIO` | `silent` | `silent` (quiet AAC track) / `pulse` / `none` |
+
 ---
 
 ## Configuration
@@ -97,6 +141,10 @@ Requires a desktop/X server on the device and `google-chrome-stable` or
 | `MQTT_BROKER` | `localhost` | Broker host |
 | `MQTT_PORT` | `1883` | Broker port |
 | `MQTT_TLS_ENABLED` | `false` | Enable TLS |
+| `MQTT_TLS_CA_CERTS` | _(blank)_ | CA cert path; blank = system trust store |
+| `MQTT_TLS_CERTFILE` | _(blank)_ | Client cert path (mutual-TLS; pair with key) |
+| `MQTT_TLS_KEYFILE` | _(blank)_ | Client private-key path (mutual-TLS; pair with cert) |
+| `RTMP_URL` | _(blank)_ | Screen-stream RTMP target; blank disables the stream service ([details](#screen-streaming-rtmp)) |
 
 ---
 

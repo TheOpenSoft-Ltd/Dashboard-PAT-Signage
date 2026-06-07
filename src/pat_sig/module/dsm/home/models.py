@@ -1,5 +1,3 @@
-from enum import EnumType
-
 from django.db import models
 
 
