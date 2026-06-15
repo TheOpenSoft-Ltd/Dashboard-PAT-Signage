@@ -108,13 +108,41 @@ ensure_python() {
   log "Provisioned Python: $PYTHON_BIN"
 }
 
+# A pipx launcher can EXIST yet be broken: when the interpreter it was
+# installed against is upgraded/pruned (common with uv-managed CPython), the
+# `~/.local/bin/pipx` shim survives but its shebang Python no longer has the
+# `pipx` module, so every call dies with "ModuleNotFoundError: No module named
+# 'pipx'". Presence is therefore not enough — the launcher must actually run.
+pipx_works() {
+  local bin="$1"
+  [[ -n "$bin" && -x "$bin" ]] || return 1
+  "$bin" --version >/dev/null 2>&1
+}
+
 ensure_pipx() {
-  if command -v pipx >/dev/null 2>&1; then PIPX_BIN="$(command -v pipx)"; return; fi
-  if [[ -x "$HOME/.local/bin/pipx" ]]; then PIPX_BIN="$HOME/.local/bin/pipx"; return; fi
-  log "Installing pipx (via $PYTHON_BIN)..."
-  "$PYTHON_BIN" -m pip install --user --quiet pipx >&2 || error "Failed to install pipx"
+  local cand
+  for cand in "$(command -v pipx 2>/dev/null)" "$HOME/.local/bin/pipx"; do
+    [[ -n "$cand" ]] || continue
+    if pipx_works "$cand"; then PIPX_BIN="$cand"; return; fi
+    if [[ -e "$cand" ]]; then
+      log "Found broken pipx launcher ($cand) — removing and reinstalling..."
+      rm -f "$cand"
+    fi
+  done
+  # Install pipx against a STABLE interpreter. pipx itself only needs Python
+  # >= 3.8 to run; the app venv still gets 3.$PY_REQ_MINOR via the later
+  # `pipx install --python "$PYTHON_BIN"`. Prefer the distro's system python3
+  # (apt-managed, never pruned) over the uv-provisioned CPython — a uv-managed
+  # interpreter can be upgraded/pruned out from under pipx, orphaning the
+  # launcher and breaking every later invocation (the bullseye failure mode).
+  local host_py="$PYTHON_BIN"
+  if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
+    host_py="$(command -v python3)"
+  fi
+  log "Installing pipx (host interpreter: $host_py)..."
+  "$host_py" -m pip install --user --quiet pipx >&2 || error "Failed to install pipx"
   PIPX_BIN="$HOME/.local/bin/pipx"
-  [[ -x "$PIPX_BIN" ]] || error "pipx not found after install"
+  pipx_works "$PIPX_BIN" || error "pipx not working after install"
   "$PIPX_BIN" ensurepath >/dev/null 2>&1 || true
 }
 
@@ -174,8 +202,13 @@ check_dependencies() {
     ensure_pipx
   else
     PYTHON_BIN="$(find_python)" || error "Python >= 3.$PY_REQ_MINOR is required (not found)"
-    command -v pipx >/dev/null 2>&1 || error "pipx is required (omit --no-auto-install to provision it)"
-    PIPX_BIN="$(command -v pipx)"
+    if pipx_works "$(command -v pipx 2>/dev/null)"; then
+      PIPX_BIN="$(command -v pipx)"
+    elif pipx_works "$HOME/.local/bin/pipx"; then
+      PIPX_BIN="$HOME/.local/bin/pipx"
+    else
+      error "a working pipx is required (omit --no-auto-install to provision it)"
+    fi
     command -v git >/dev/null 2>&1 || error "git is required"
     command -v tar >/dev/null 2>&1 || error "tar is required"
   fi
