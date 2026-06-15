@@ -88,6 +88,14 @@ else
   OZONE=""
 fi
 
+# Hide the mouse cursor for an unattended display. unclutter is X11-only
+# (no Wayland equivalent); -idle 0 hides it immediately, -root covers the whole
+# screen. Backgrounded so it stays up alongside Chromium, and best-effort: a
+# missing unclutter must never block the kiosk from launching.
+if [ -z "$WAYLAND_DISPLAY" ] && command -v unclutter >/dev/null 2>&1; then
+  unclutter -idle 0 -root >/dev/null 2>&1 &
+fi
+
 exec {chrome} {chrome_flags} $OZONE "{url}"
 """
 

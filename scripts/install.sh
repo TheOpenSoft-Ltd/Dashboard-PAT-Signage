@@ -129,18 +129,35 @@ ensure_pipx() {
       rm -f "$cand"
     fi
   done
-  # Install pipx against a STABLE interpreter. pipx itself only needs Python
-  # >= 3.8 to run; the app venv still gets 3.$PY_REQ_MINOR via the later
-  # `pipx install --python "$PYTHON_BIN"`. Prefer the distro's system python3
-  # (apt-managed, never pruned) over the uv-provisioned CPython — a uv-managed
-  # interpreter can be upgraded/pruned out from under pipx, orphaning the
-  # launcher and breaking every later invocation (the bullseye failure mode).
-  local host_py="$PYTHON_BIN"
-  if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
-    host_py="$(command -v python3)"
+  # Install pipx into ~/.local/bin. Two methods, in order of preference:
+  #
+  #   1. `pip install --user` on a *system* (non-uv) python3. Simplest path and
+  #      the right choice on older distros (e.g. Debian bullseye, Python 3.9)
+  #      where pip happily installs into the user site.
+  #
+  #   2. `uv tool install pipx`. Used when (1) is unavailable or refused. A
+  #      uv-provisioned CPython is PEP 668 "externally-managed", so a plain
+  #      `pip install` into it aborts with externally-managed-environment; uv's
+  #      own tool installer is the supported way and sidesteps that. This is
+  #      also the fallback on modern distros whose *system* python is itself
+  #      externally-managed (e.g. Ubuntu 24.04). We must never pip-install into
+  #      "$PYTHON_BIN" when it is uv-managed — that is the failure being fixed.
+  local sys_py installed=false
+  sys_py="$(command -v python3 2>/dev/null || true)"
+  if [[ -n "$sys_py" && "$sys_py" != "$HOME/.local/"* ]] \
+     && "$sys_py" -m pip --version >/dev/null 2>&1; then
+    log "Installing pipx via $sys_py (pip --user)..."
+    if "$sys_py" -m pip install --user --quiet pipx >&2; then
+      installed=true
+    else
+      log "pip --user refused (externally-managed?) — falling back to uv"
+    fi
   fi
-  log "Installing pipx (host interpreter: $host_py)..."
-  "$host_py" -m pip install --user --quiet pipx >&2 || error "Failed to install pipx"
+  if [[ "$installed" != true ]]; then
+    ensure_uv
+    log "Installing pipx via uv tool install ($UV_BIN)..."
+    "$UV_BIN" tool install pipx >&2 || error "Failed to install pipx (uv tool install)"
+  fi
   PIPX_BIN="$HOME/.local/bin/pipx"
   pipx_works "$PIPX_BIN" || error "pipx not working after install"
   "$PIPX_BIN" ensurepath >/dev/null 2>&1 || true
@@ -158,13 +175,14 @@ install_system_packages() {
     ubuntu|debian|raspbian|pop|linuxmint|elementary)
       UPDATE_CMD="sudo apt update"
       INSTALL_CMD="sudo apt install -y"
-      # chromium-browser for the kiosk display (Raspberry Pi OS).
-      PACKAGES=(git curl tar python3-pip chromium-browser)
+      # chromium-browser for the kiosk display (Raspberry Pi OS); unclutter
+      # hides the mouse cursor on the X11 seat (see KIOSK_LAUNCHER).
+      PACKAGES=(git curl tar python3-pip chromium-browser unclutter)
       ;;
     fedora|rhel|centos|rocky|almalinux)
       UPDATE_CMD="sudo dnf check-update || true"
       INSTALL_CMD="sudo dnf install -y"
-      PACKAGES=(git curl tar python3-pip chromium)
+      PACKAGES=(git curl tar python3-pip chromium unclutter)
       ;;
     arch|archarm|manjaro|endeavouros)
       UPDATE_CMD="sudo pacman -Sy"
