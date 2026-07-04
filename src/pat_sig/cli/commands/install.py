@@ -26,6 +26,7 @@ console = Console()
 SERVICE_TEMPLATE = """[Unit]
 Description=PAT Signage (DSM) Display Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -53,6 +54,8 @@ KIOSK_TEMPLATE = """[Unit]
 Description=PAT Signage Kiosk (Chromium)
 After=graphical.target {backend}.service
 Wants={backend}.service
+# Self-healing: never give up restarting (disable the start-rate limiter).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -108,6 +111,8 @@ STREAM_TEMPLATE = """[Unit]
 Description=PAT Signage Screen Stream (RTMP)
 After=graphical.target {kiosk}.service
 Wants=graphical.target
+# Self-healing: never give up restarting (disable the start-rate limiter).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

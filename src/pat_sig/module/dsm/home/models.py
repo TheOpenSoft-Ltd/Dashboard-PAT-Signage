@@ -19,6 +19,9 @@ class TaskStatus(models.TextChoices):
     DOWNLOADED = "downloaded", "Downloaded"
     PLAYING = "playing", "playing"
     SKIPING = "skiping", "skiping"
+    # Manually stopped while playing: parked off-screen and NOT auto-resumed by
+    # the scheduler (unlike "downloaded"), until the backend re-schedules it.
+    STOP = "stop", "Stop"
     COMPLETED = "completed", "Completed"
     FAILED = "failed", "Failed"
 
