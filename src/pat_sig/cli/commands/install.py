@@ -26,6 +26,7 @@ console = Console()
 SERVICE_TEMPLATE = """[Unit]
 Description=PAT Signage (DSM) Display Service
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -53,6 +54,8 @@ KIOSK_TEMPLATE = """[Unit]
 Description=PAT Signage Kiosk (Chromium)
 After=graphical.target {backend}.service
 Wants={backend}.service
+# Self-healing: never give up restarting (disable the start-rate limiter).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -88,6 +91,14 @@ else
   OZONE=""
 fi
 
+# Hide the mouse cursor for an unattended display. unclutter is X11-only
+# (no Wayland equivalent); -idle 0 hides it immediately, -root covers the whole
+# screen. Backgrounded so it stays up alongside Chromium, and best-effort: a
+# missing unclutter must never block the kiosk from launching.
+if [ -z "$WAYLAND_DISPLAY" ] && command -v unclutter >/dev/null 2>&1; then
+  unclutter -idle 0 -root >/dev/null 2>&1 &
+fi
+
 exec {chrome} {chrome_flags} $OZONE "{url}"
 """
 
@@ -100,6 +111,8 @@ STREAM_TEMPLATE = """[Unit]
 Description=PAT Signage Screen Stream (RTMP)
 After=graphical.target {kiosk}.service
 Wants=graphical.target
+# Self-healing: never give up restarting (disable the start-rate limiter).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

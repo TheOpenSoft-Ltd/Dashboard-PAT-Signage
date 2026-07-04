@@ -168,6 +168,22 @@ def handle_status_message(payload: str, dsm_id: str = None):
         logger.warning(f"Status message for unknown task {dsm_task_id}")
         return
 
+    if raw_status == "STOP":
+        # Manual hard-stop of the clip on screen right now. Unlike SKIPING it
+        # does NOT revert to "downloaded" (which the scheduler would replay
+        # inside the same window) — it parks the task in "stop" so it stays off
+        # screen until the backend re-schedules it. Idempotent: a resent STOP
+        # (backend retries until acked) simply re-acks.
+        if task.status != "stop":
+            task.status = "stop"
+            task.save(update_fields=["status", "updated_at"])
+            logger.info(f"DSMTask {dsm_task_id} STOP -> stopped (parked off-screen)")
+        else:
+            logger.info(f"DSMTask {dsm_task_id} STOP (already stopped) -> re-ack")
+        # Durable ack so the backend clears its pending-stop and stops resending.
+        _report_status(task, "stopped")
+        return
+
     if raw_status == "SKIPING":
         if task.status == "playing":
             # Force-skip while playing: stop the source now, but revert to
