@@ -1,0 +1,72 @@
+name: CI
+
+# This repo had no checks at all, and it is the firmware that drives the
+# physical signs — a broken template is a blank road sign, not a stack trace
+# someone notices in a log.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # uv is the package manager this project uses (see AGENTS.md); the lock
+      # file is uv.lock, so `uv sync --frozen` fails on drift the way
+      # --frozen-lockfile does for yarn.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install (must match uv.lock)
+        run: uv sync --frozen
+
+      # Catches syntax errors in every module, including ones no import path
+      # reaches at startup.
+      - name: Byte-compile all sources
+        run: uv run python -m compileall -q src
+
+      # Django's own consistency check: bad settings, broken app configs,
+      # invalid model/admin definitions.
+      - name: Django system check
+        working-directory: src/pat_sig/module/dsm
+        run: uv run python manage.py check
+
+      # Renders every template so an unclosed tag or a bad {% url %} fails here
+      # rather than on a sign. Templates are the most common thing to break in
+      # this repo and the hardest to notice.
+      - name: Template syntax
+        working-directory: src/pat_sig/module/dsm
+        run: |
+          uv run python - <<'PY'
+          import os, sys, django
+          os.environ.setdefault("DJANGO_SETTINGS_MODULE", "core.settings")
+          django.setup()
+          from django.template.loader import get_template
+          from django.template import TemplateSyntaxError
+          from pathlib import Path
+
+          failed = False
+          for path in Path(".").rglob("templates/**/*.html"):
+              name = str(path).split("templates" + os.sep, 1)[1].replace(os.sep, "/")
+              try:
+                  get_template(name)
+                  print("ok   " + name)
+              except TemplateSyntaxError as exc:
+                  print("FAIL " + name + ": " + str(exc))
+                  failed = True
+          sys.exit(1 if failed else 0)
+          PY
