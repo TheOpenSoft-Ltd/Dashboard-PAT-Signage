@@ -25,6 +25,8 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        /* anchors the incoming clip while it buffers behind the current one */
+        position: relative;
       }
       .media-container img,
       .media-container video {
@@ -32,29 +34,135 @@
         height: 100%;
         object-fit: contain;
       }
+      /*
+        The next clip is mounted here first so the browser can fetch and decode
+        it while the current one is still on screen. It only becomes visible
+        once it can actually paint a frame — that is what keeps the sign from
+        going black during a band change.
+      */
+      .media-container .staging {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
     </style>
   </head>
   <body>
     <div class="media-container" id="media-container">
-      {% if media_type == 'video' %} {% if "://" in media_url %}
+      {% if media_type == 'video' %}
       <video autoplay loop {% if video_muted %}muted{% endif %} playsinline>
         <source src="{{ media_url }}" type="video/{{ video_format }}" />
       </video>
-      {% else %}
-      <video autoplay loop {% if video_muted %}muted{% endif %} playsinline>
-        <source src="{{ media_url }}" type="video/{{ video_format }}" />
-      </video>
-      {% endif %}       {% elif media_type == 'image' or media_type == 'gif' %} {% if "://" in media_url %}
+      {% elif media_type == 'image' or media_type == 'gif' %}
       <img src="{{ media_url }}" alt="Digital Signage" />
       {% else %}
-      <img src="{{ media_url }}" alt="Digital Signage" />
-      {% endif %} {% else %}
       <img src="{% static 'default.png' %}" alt="Digital Signage" />
       {% endif %}
     </div>
     <script>
-      const mediaUrl = "{{ media_url }}";
-      let lastUrl = mediaUrl;
+      // Swapping the clip used to be `location.reload()`. A reload tears the
+      // page down, re-renders Django and re-fetches the media, and the body is
+      // black for all of it — so every band change blacked the sign out for a
+      // second or more. Instead the new clip is staged invisibly, and only
+      // replaces the old one once it is ready to paint.
+      const POLL_MS = 5000;
+      // Give up staging a clip that will not load, rather than leaving a
+      // half-built element attached forever.
+      const READY_TIMEOUT_MS = 15000;
+      const DEFAULT_MEDIA_URL = "{% static 'default.png' %}";
+
+      const container = document.getElementById("media-container");
+      let shown = { url: "{{ media_url }}", type: "{{ media_type }}" };
+      let swapping = false;
+
+      function buildMedia(data) {
+        const url = data.media_url || DEFAULT_MEDIA_URL;
+        const isVideo = data.media_type === "video" && data.media_url;
+
+        if (isVideo) {
+          const video = document.createElement("video");
+          // No autoplay attribute: the staged clip is started explicitly once
+          // it is buffered, so it is revealed already playing from frame 0
+          // instead of silently running while invisible.
+          video.loop = true;
+          video.playsInline = true;
+          video.muted = {{ video_muted|yesno:"true,false" }};
+          video.preload = "auto";
+          const source = document.createElement("source");
+          source.src = url;
+          source.type = "video/" + (data.video_format || "mp4");
+          video.appendChild(source);
+          return video;
+        }
+
+        const img = document.createElement("img");
+        img.alt = "Digital Signage";
+        img.src = url;
+        return img;
+      }
+
+      // Resolves when the element can actually paint; rejects on error/timeout.
+      function whenReady(el) {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error("timed out")),
+            READY_TIMEOUT_MS,
+          );
+          const done = (fn) => (ev) => {
+            clearTimeout(timer);
+            fn(ev);
+          };
+          const ok = done(resolve);
+          const fail = done(() => reject(new Error("failed to load")));
+
+          if (el.tagName === "VIDEO") {
+            // canplaythrough = enough buffered to run without stalling.
+            el.addEventListener("canplaythrough", ok, { once: true });
+            el.addEventListener("error", fail, { once: true });
+            el.load();
+          } else {
+            if (el.complete && el.naturalWidth > 0) return ok();
+            el.addEventListener("load", ok, { once: true });
+            el.addEventListener("error", fail, { once: true });
+          }
+        });
+      }
+
+      async function swapTo(data) {
+        if (swapping) return;
+        swapping = true;
+
+        const next = buildMedia(data);
+        next.classList.add("staging");
+        container.appendChild(next);
+
+        try {
+          await whenReady(next);
+          if (next.tagName === "VIDEO") {
+            // Start before revealing so the first visible frame is live video.
+            try {
+              await next.play();
+            } catch (err) {
+              // Autoplay refused (kiosk runs with the policy disabled, so this
+              // is unexpected) — show it anyway rather than blacking out.
+              console.error("playback did not start", err);
+            }
+          }
+          for (const old of Array.from(container.children)) {
+            if (old !== next) old.remove();
+          }
+          next.classList.remove("staging");
+          shown = { url: data.media_url, type: data.media_type };
+        } catch (err) {
+          // Keep whatever is on screen. A stale clip is better than a black
+          // sign, and the next poll will try again.
+          next.remove();
+          console.error("media swap skipped, keeping current clip", err);
+        } finally {
+          swapping = false;
+        }
+      }
 
       setInterval(async () => {
         try {
@@ -62,14 +170,13 @@
             headers: { Accept: "application/json" },
           });
           const data = await res.json();
-          if (data.media_url !== lastUrl) {
-            lastUrl = data.media_url;
-            location.reload();
+          if (data.media_url !== shown.url || data.media_type !== shown.type) {
+            await swapTo(data);
           }
         } catch (e) {
           console.error("Polling error:", e);
         }
-      }, 5000);
+      }, POLL_MS);
     </script>
   </body>
 </html>
