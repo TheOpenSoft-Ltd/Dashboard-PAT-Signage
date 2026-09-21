@@ -1,0 +1,6 @@
+[Unit]
+Description=pat-sig MQTT reconnect-wedge watchdog
+After=pat-sig.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pat-sig-mqtt-watchdog.sh
