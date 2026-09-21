@@ -85,10 +85,15 @@ class MqttService:
             logger.info("MQTT reconnecting in 5 seconds...")
             time.sleep(5)
             try:
-                broker = getattr(settings, "MQTT_BROKER", "localhost")
-                port = getattr(settings, "MQTT_PORT", 1883)
-                keepalive = getattr(settings, "MQTT_KEEPALIVE", 60)
-                self._client.connect(broker, port, keepalive)
+                # hand-patch 2026-07-10: recover even if the network-loop
+                # thread died — stop stale loop, reconnect, start fresh loop
+                # (in-process equivalent of a service restart, which we know works)
+                try:
+                    self._client.loop_stop()
+                except Exception:
+                    pass
+                self._client.reconnect()
+                self._client.loop_start()
             except Exception as e:
                 logger.error(f"MQTT reconnect failed: {e}")
 
