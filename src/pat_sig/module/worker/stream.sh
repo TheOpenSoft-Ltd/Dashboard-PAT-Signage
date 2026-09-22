@@ -22,6 +22,10 @@
 #                      silent = inject a quiet AAC track (RTMP ingests that
 #                      reject video-only streams, e.g. YouTube, need this)
 #   DISPLAY            X11 display               (default :0, auto-detected)
+#   STREAM_BACKOFF_FAST  a run shorter than this many seconds counts as a
+#                      failed attempt, not a session          (default 60)
+#   STREAM_BACKOFF_CAP   longest wait between failed attempts, seconds
+#                      (default 100 — under the wedge-watchdog's 120 s grace)
 #
 # Examples:
 #   ./stream.sh rtmp://10.0.0.5/live/ps12
@@ -40,7 +44,7 @@ error() { printf '[pat-sig][stream][error] %s\n' "$*" >&2; exit 1; }
 if [[ -f "$ENV_FILE" ]]; then
   while IFS='=' read -r key value; do
     case "$key" in
-      RTMP_URL|STREAM_FPS|STREAM_RESOLUTION|STREAM_BITRATE|STREAM_ENCODER|STREAM_AUDIO)
+      RTMP_URL|STREAM_FPS|STREAM_RESOLUTION|STREAM_BITRATE|STREAM_ENCODER|STREAM_AUDIO|STREAM_BACKOFF_FAST|STREAM_BACKOFF_CAP)
         # Don't clobber a value the caller already exported.
         [[ -n "${!key:-}" ]] || printf -v "$key" '%s' "$value"
         ;;
@@ -134,6 +138,36 @@ run_wayland() {
     "${wf_audio[@]}" \
     --file="$RTMP_URL"
 }
+
+# --- Back off while the publish keeps dying --------------------------------
+# The unit is Restart=always / RestartSec=10 with StartLimitIntervalSec=0, and systemd 247
+# (Debian 11) has no native backoff. While the RTMP ingest is down every attempt dies within
+# seconds, which is ~8,600 restarts/day/sign over 4G — every sign did exactly that on
+# 2026-07-25..28 and 2026-08-12..13. We exec the encoder, so this script never sees its own
+# exit; instead the previous START time is kept in the runtime dir (tmpfs, cleared on boot) and
+# a short gap since it means the last run failed fast. The wait doubles from 10 s per
+# consecutive fast failure, capped at STREAM_BACKOFF_CAP so a sign is never more than ~2 min
+# behind an ingest that has come back, and so it stays inside the wedge-watchdog's 120 s grace.
+BACKOFF_STATE="${XDG_RUNTIME_DIR:-/tmp}/pat-sig-stream.backoff"
+FAST="${STREAM_BACKOFF_FAST:-60}"   # a run shorter than this is a failure, not a session
+CAP="${STREAM_BACKOFF_CAP:-100}"    # longest wait between attempts, seconds
+prev=0; n=0
+[[ -r "$BACKOFF_STATE" ]] && read -r prev n < "$BACKOFF_STATE" || true
+[[ "$prev" =~ ^[0-9]+$ && "$n" =~ ^[0-9]+$ ]] || { prev=0; n=0; }
+if (( prev > 0 && $(date +%s) - prev < FAST )); then n=$(( n < 10 ? n + 1 : 10 )); else n=0; fi
+if (( n > 0 )); then
+  delay=$(( 10 << (n - 1) )); (( delay > CAP )) && delay=$CAP
+  log "publish failed ${n}x in a row (each <${FAST}s) — waiting ${delay}s before the next attempt"
+  sleep "$delay"
+fi
+# Fail fast while the ingest is unreachable: no encoder launched, no 4G spent on a doomed handshake.
+rtmp_hp="${RTMP_URL#*://}"; rtmp_hp="${rtmp_hp#*@}"; rtmp_hp="${rtmp_hp%%/*}"
+rtmp_host="${rtmp_hp%%:*}"; rtmp_port="${rtmp_hp##*:}"; [[ "$rtmp_port" == "$rtmp_hp" ]] && rtmp_port=1935
+printf '%s %s
+' "$(date +%s)" "$n" > "$BACKOFF_STATE"
+if ! timeout 5 bash -c "exec 3<>/dev/tcp/$rtmp_host/$rtmp_port" 2>/dev/null; then
+  error "RTMP ingest $rtmp_host:$rtmp_port unreachable — not starting the encoder (attempt $((n + 1)))"
+fi
 
 if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
   run_wayland
