@@ -12,6 +12,9 @@ class TaskType(models.TextChoices):
     ALERTMEDIUM = "ALERTMEDIUM", "Alert Medium"
     ALERTLOW = "ALERTLOW", "Alert Low"
     PUBLICRELATION = "PUBLICRELATION", "Public Relation"
+    # The resting banner, pushed from the dashboard like the alert clips. Never
+    # "playing": the home view shows the newest one when nothing else is.
+    DEFAULT = "DEFAULT", "Default banner"
 
 
 class TaskStatus(models.TextChoices):

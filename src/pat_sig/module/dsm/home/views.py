@@ -20,6 +20,19 @@ def home(request):
             .order_by("date_started_at", "time_started_at")
             .first()
         )
+    if not running_task:
+        # Nothing playing: the pushed default banner, before the built-in
+        # default.png. The one received most recently is current (a rollback
+        # re-sends the previous version, which makes it the most recent). It is
+        # never "playing", so alerts and PR tasks take the screen exactly as
+        # before, and the scheduler ignores it (no dates).
+        running_task = (
+            DSMTask.objects.filter(task_type="DEFAULT")
+            .exclude(media_local_path__isnull=True)
+            .exclude(media_local_path="")
+            .order_by("-updated_at")
+            .first()
+        )
     if running_task:
         media_type = running_task.media_type
         if running_task.media_local_path:
