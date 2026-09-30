@@ -1,6 +1,7 @@
 #!/bin/bash
 # pat-sig-mqtt-watchdog — restart pat-sig if stuck in the MQTT reconnect loop.
-# 2026-07-10 · defense-in-depth beside the mqtt_service _reconnect_loop patch.
+# 2026-07-10 · defense-in-depth beside mqtt_service's reconnect (paho's own since 2026-09-30,
+# which still logs "MQTT reconnecting in 5 seconds..." once per failed attempt, 5 s apart).
 set -u
 WINDOW=${WINDOW:-120}; MIN_RECON=${MIN_RECON:-10}
 CONNECTED_MAX_AGE=${CONNECTED_MAX_AGE:-100}; COOLDOWN=${COOLDOWN:-600}
