@@ -3,6 +3,7 @@ from __future__ import annotations  # PEP 604 (X | None) on Python 3.9
 import json
 import logging
 import mimetypes
+import time
 
 import requests
 from django.conf import settings
@@ -118,6 +119,10 @@ def _report_status(task, status: str):
             "DSMId": task.dsm_id,
             "status": status,
             "name": task.name,
+            # When this happened, by the sign's clock (epoch ms): the backend
+            # applies a sign's reports in this order and drops one older than
+            # the last it applied (security register I5).
+            "at": int(time.time() * 1000),
         },
         ensure_ascii=False,
     )

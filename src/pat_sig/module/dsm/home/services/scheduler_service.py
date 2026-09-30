@@ -76,6 +76,9 @@ class SchedulerService:
             "DSMId": task.dsm_id,
             "status": status,
             "name": task.name,
+            # The sign's clock, epoch ms: orders its reports at the backend
+            # (security register I5).
+            "at": int(time.time() * 1000),
         }
         if date:
             body["date"] = date

@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from threading import Thread
+from threading import Lock, Thread
 
 import paho.mqtt.client as mqtt
 from django.conf import settings
@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 RECONNECT_DELAY_S = 5
 # How often the supervisor checks that paho's network thread is running.
 SUPERVISE_S = 30
+# How long a flush waits for one already running before leaving it the rest.
+OUTBOX_LOCK_WAIT_S = 30
 
 
 class MqttService:
@@ -34,6 +36,7 @@ class MqttService:
     _started = False
     _stopping = False
     _supervisor = None
+    _outbox_lock = Lock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -215,9 +218,24 @@ class MqttService:
         Stops at the first failure so ordering is preserved and unsent rows
         survive until the broker/backend is reachable again. Uses QoS 1 so the
         broker acknowledges receipt.
+
+        One flush at a time (security register I5). It is called from paho's
+        thread on connect, from the scheduler tick and after every new report;
+        two flushes working from the same list publish each row twice and can
+        send an old report after a newer one. A caller waits for the running
+        flush, then sends whatever is still queued.
         """
         if not self._connected:
             return
+        if not self._outbox_lock.acquire(timeout=OUTBOX_LOCK_WAIT_S):
+            logger.warning("Outbox flush still running; the next one sends the rest")
+            return
+        try:
+            self._flush_outbox()
+        finally:
+            self._outbox_lock.release()
+
+    def _flush_outbox(self):
         from home.models import OutboxReport
 
         try:
@@ -228,16 +246,22 @@ class MqttService:
 
         for row in rows:
             result = self._client.publish(row.topic, row.payload, qos=1)
-            if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"Outbox flushed -> {row.topic}: {row.payload}")
-                row.delete()
-            else:
+            try:
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    logger.info(f"Outbox flushed -> {row.topic}: {row.payload}")
+                    row.delete()
+                    continue
                 row.attempts += 1
                 row.save(update_fields=["attempts"])
                 logger.warning(
                     f"Outbox flush failed (rc={result.rc}); will retry #{row.pk}"
                 )
-                break
+            except Exception as e:
+                # A locked database: stop here, in order. A row that was sent
+                # but not deleted goes again next time, with the same `at`, and
+                # the backend drops the repeat.
+                logger.error(f"Outbox update failed on #{row.pk}: {e}")
+            break
 
     def is_connected(self):
         return self._client.is_connected()
