@@ -3,6 +3,7 @@ from __future__ import annotations  # PEP 604 (X | None) on Python 3.9
 import json
 import logging
 import mimetypes
+import time
 
 import requests
 from django.conf import settings
@@ -118,6 +119,10 @@ def _report_status(task, status: str):
             "DSMId": task.dsm_id,
             "status": status,
             "name": task.name,
+            # When this happened, by the sign's clock (epoch ms): the backend
+            # applies a sign's reports in this order and drops one older than
+            # the last it applied (security register I5).
+            "at": int(time.time() * 1000),
         },
         ensure_ascii=False,
     )
@@ -141,6 +146,32 @@ def delete_task_media(task):
         logger.error(f"Failed to delete media {filepath}: {e}")
 
 
+def _answer_ping(data: dict):
+    """Answer the backend's alert channel check (security register I4).
+
+    The backend pings every sign once a minute on /status; this answer on
+    /action tells the dashboard the channel alerts travel on works end to end,
+    which the RTMP stream status cannot. Sent directly, not through the outbox:
+    a pong that cannot go out now is worthless later, and one flushed hours
+    afterwards would claim a connection that was not there.
+    """
+    device_id = getattr(settings, "DEVICE_ID", "")
+    if not device_id:
+        return
+    mqtt_service.publish(
+        f"pat-sig/{device_id}/action",
+        json.dumps(
+            {
+                "type": "pong",
+                "nonce": data.get("nonce"),
+                "sentAt": data.get("sentAt"),
+                "at": int(time.time() * 1000),
+            }
+        ),
+        qos=1,
+    )
+
+
 def handle_status_message(payload: str, dsm_id: str = None):
     """Apply a status command pushed by the backend (pat-sig/{deviceId}/status).
 
@@ -154,6 +185,10 @@ def handle_status_message(payload: str, dsm_id: str = None):
         data = json.loads(payload)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in status message: {e}")
+        return
+
+    if data.get("type") == "ping":
+        _answer_ping(data)
         return
 
     dsm_task_id = data.get("DSMTaskId")
