@@ -3,12 +3,20 @@ from __future__ import annotations  # PEP 604 (X | None) on Python 3.9
 import json
 import logging
 import mimetypes
+import os
 import time
 
 import requests
 from django.conf import settings
 
+from home.media_download import (
+    DownloadError,
+    complete_local_file,
+    fetch_to_file,
+    remote_size,
+)
 from home.services.mqtt_service import mqtt_service
+from home.task_downloads import task_downloads
 
 logger = logging.getLogger(__name__)
 
@@ -65,36 +73,51 @@ def resolve_media_format(content_type: str | None, url: str) -> tuple[str, str]:
     return "jpg", "image"
 
 
-def download_media(url: str, dsm_task_id: str) -> tuple[str | None, str | None]:
+def download_media(
+    url: str, dsm_task_id: str, url_provider=None
+) -> tuple[str | None, str | None]:
     """Download media; return (local_relative_path, media_type).
 
-    media_type is one of "video" | "image" | "gif", derived from the response
-    Content-Type. Returns (None, None) on any failure.
+    Streamed to ``<task>.part`` and resumed after drops (media_download.py); the
+    file is renamed into place only once it is whole, so the screen never sees a
+    half file. A complete copy already on the sign is kept: the backend re-sends
+    a task until the sign reports it, and a rollback re-sends an older version —
+    neither may download 2 GB again. ``url_provider`` returns the freshest link
+    (re-sends carry new ones). media_type is "video" | "image" | "gif", from the
+    response Content-Type. Returns (None, None) on failure.
     """
     if not url:
         return None, None
     media_dir = settings.MEDIA_ROOT / "signage"
     media_dir.mkdir(parents=True, exist_ok=True)
 
+    existing = complete_local_file(media_dir, dsm_task_id)
+    if existing is not None:
+        size = remote_size(url)
+        if size is None or size == existing.stat().st_size:
+            ext = existing.suffix.lstrip(".").lower()
+            logger.info(f"Media for {dsm_task_id} already on the sign: {existing.name}")
+            return f"signage/{existing.name}", _media_category(ext)
+        logger.info(f"Media for {dsm_task_id} changed on the server: downloading again")
+        existing.unlink()
+
+    part = media_dir / f"{dsm_task_id}.part"
     try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-    except Exception as e:
+        size, content_type = fetch_to_file(url_provider or (lambda: url), part)
+    except DownloadError as e:
         logger.error(f"Failed to download media: {e}")
         return None, None
 
-    ext, media_type = resolve_media_format(response.headers.get("Content-Type"), url)
-
+    ext, media_type = resolve_media_format(content_type, url)
     filename = f"{dsm_task_id}.{ext}"
     filepath = media_dir / filename
     try:
-        with open(filepath, "wb") as f:
-            f.write(response.content)
-    except Exception as e:
-        logger.error(f"Failed to write media to {filepath}: {e}")
+        os.replace(part, filepath)
+    except OSError as e:
+        logger.error(f"Failed to move media into place at {filepath}: {e}")
         return None, None
 
-    logger.info(f"Downloaded media to {filepath} (media_type={media_type})")
+    logger.info(f"Downloaded media to {filepath} ({size} bytes, media_type={media_type})")
     return f"signage/{filename}", media_type
 
 
@@ -313,6 +336,58 @@ def handle_alert_message(payload: str):
     _report_status(task, "playing")
 
 
+def _media_url(data: dict) -> str:
+    try:
+        return data["url"]["url"]
+    except (TypeError, KeyError):
+        return data.get("url", "") or ""
+
+
+def apply_task_message(dsm_task_id: str, data: dict | None = None) -> None:
+    """Download a task's media and record the task (runs on a download worker).
+
+    The newest message for the task is used — a re-send that arrived while the
+    file was coming in carries a fresher link and wins.
+    """
+    data = task_downloads.latest(dsm_task_id) or data or {}
+    name = data.get("name", "")
+    task_type = data.get("type")
+    media_url = _media_url(data)
+    dsm_id = data.get("DSMId") or ""
+
+    def freshest_link() -> str:
+        return _media_url(task_downloads.latest(dsm_task_id) or data) or media_url
+
+    local_path, media_type = download_media(media_url, dsm_task_id, freshest_link)
+
+    data = task_downloads.latest(dsm_task_id) or data
+    status = "downloaded" if local_path else "pending"
+    task, created = DSMTask.objects.update_or_create(
+        dsm_task_id=dsm_task_id,
+        defaults={
+            "dsm_id": dsm_id,
+            "name": name,
+            "task_type": task_type,
+            "media_url": _media_url(data) or media_url,
+            "media_local_path": local_path,
+            "media_type": media_type or "image",
+            "timezone": data.get("timezone"),
+            "date_started_at": data.get("dateStartedAt"),
+            "time_started_at": data.get("timeStartedAt"),
+            "date_end_at": data.get("dateEndAt"),
+            "time_end_at": data.get("timeEndAt"),
+            "status": status,
+        },
+    )
+
+    logger.info(f"DSMTask {'created' if created else 'updated'}: {dsm_task_id}")
+
+    # /data only PRE-DOWNLOADS the media; it never starts playback.
+    # Playing an alert is commanded separately via the /alert channel.
+    if status == "downloaded":
+        _report_status(task, "downloaded")
+
+
 def handle_mqtt_message(sender, topic: str, payload: str, dsm_id: str = None, **kwargs):
     # Status/command channel: pat-sig/{deviceId}/status (vs the /data task feed)
     if topic and topic.endswith("/status"):
@@ -322,53 +397,18 @@ def handle_mqtt_message(sender, topic: str, payload: str, dsm_id: str = None, **
     if topic and topic.endswith("/alert"):
         handle_alert_message(payload)
         return
+    # Task feed: hand the download to a worker and return at once, so this
+    # thread (paho's network loop) stays free for alerts and keepalives.
     try:
         data = json.loads(payload)
         logger.info(f"Processing MQTT message: {data}")
-
         dsm_task_id = data.get("DSMTaskId")
-        name = data.get("name", "")
-        task_type = data.get("type")
-
-        try:
-            media_url = data["url"]["url"]
-        except (TypeError, KeyError):
-            media_url = data.get("url", "")
-
-        dsm_id = data.get("DSMId") or dsm_id or ""
-
         if not dsm_task_id:
             logger.warning("No DSMTaskId in message")
             return
-
-        local_path, media_type = download_media(media_url, dsm_task_id)
-
-        status = "downloaded" if local_path else "pending"
-        task, created = DSMTask.objects.update_or_create(
-            dsm_task_id=dsm_task_id,
-            defaults={
-                "dsm_id": dsm_id,
-                "name": name,
-                "task_type": task_type,
-                "media_url": media_url,
-                "media_local_path": local_path,
-                "media_type": media_type or "image",
-                "timezone": data.get("timezone"),
-                "date_started_at": data.get("dateStartedAt"),
-                "time_started_at": data.get("timeStartedAt"),
-                "date_end_at": data.get("dateEndAt"),
-                "time_end_at": data.get("timeEndAt"),
-                "status": status,
-            },
-        )
-
-        logger.info(f"DSMTask {'created' if created else 'updated'}: {dsm_task_id}")
-
-        # /data only PRE-DOWNLOADS the media; it never starts playback.
-        # Playing an alert is commanded separately via the /alert channel.
-        if status == "downloaded":
-            _report_status(task, "downloaded")
-
+        if not data.get("DSMId") and dsm_id:
+            data["DSMId"] = dsm_id
+        task_downloads.submit(dsm_task_id, data, apply_task_message)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in MQTT message: {e}")
     except Exception as e:
