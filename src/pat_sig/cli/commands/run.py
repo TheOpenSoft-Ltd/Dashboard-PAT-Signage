@@ -57,6 +57,11 @@ def run(host: str, port: int, migrate: bool, no_server: bool, dev: bool):
 
     console.print(f"[green]Starting gunicorn on {host}:{port}[/green]")
     # workers=1 is REQUIRED: the MQTT client + scheduler must be a singleton.
+    # Threads (gthread), not processes, serve requests in parallel: the screen's
+    # browser streams a long video (a PR clip can last many minutes) while the
+    # page polls every 5 s. With one sync worker the stream held the only
+    # worker, gunicorn killed it after its 30 s timeout and restarted it every
+    # ~35 s, dropping MQTT (alerts) each time.
     subprocess.run(
         [
             sys.executable,
@@ -65,6 +70,10 @@ def run(host: str, port: int, migrate: bool, no_server: bool, dev: bool):
             "core.wsgi:application",
             "--workers",
             "1",
+            "--worker-class",
+            "gthread",
+            "--threads",
+            "4",
             "--bind",
             f"{host}:{port}",
         ],

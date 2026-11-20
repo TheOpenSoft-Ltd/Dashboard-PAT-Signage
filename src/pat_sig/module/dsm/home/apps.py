@@ -22,3 +22,15 @@ class HomeConfig(AppConfig):
         mqtt_service.connect()
         scheduler_service.start()
         mqtt_message_received.connect(handle_mqtt_message)
+
+        # A download cut off by a restart left a .part behind. The next re-send
+        # of its task resumes it; one older than a link's life (24 h) never
+        # will, so it only takes space.
+        try:
+            from django.conf import settings
+
+            from home.media_download import cleanup_stale_parts
+
+            cleanup_stale_parts(settings.MEDIA_ROOT / "signage")
+        except Exception:
+            pass
